@@ -97,5 +97,5 @@ int PacketHandler::calculateBCC(unsigned char buffer[], int size){
     for (int i = 0; i < size; i++) {
         sum += buffer[i];
     }
-    return (sum % 256) + ACK + EXT; // ACK, EXT 포함
+    return (sum + ACK + EXT) % 256; // ACK, EXT 포함
 }
