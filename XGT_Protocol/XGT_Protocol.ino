@@ -4,8 +4,6 @@
 #define RX_PIN 17
 #define TX_PIN 16
 
-//HardwareSerial SerialPLC(2);
-
 void setup(){
     Serial.begin(115200);
     Serial2.begin(115200, SERIAL_8N1, RX_PIN, TX_PIN);
