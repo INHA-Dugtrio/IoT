@@ -6,19 +6,19 @@
 #define EXT 0x03
 #define MAX 256
 
-class PacketHandler{
+class PacketHandler {
 public:
 
-    static unsigned char readByteWithBlocking();
-    static Frame* readPacket();
-    static void printPacket(Frame*);
-    static void sendPacket(Frame*);
+	static unsigned char readByteWithBlocking();
+	static Frame* readPacket();
+	static void printPacket(Frame*);
+	static void sendPacket(Frame*, const char*);
 
 private:
 
-    static int asciiHexToDecimal(char);
-    static int readBCC();
-    static int calculateBCC(unsigned char[], int);
+	static int asciiHexToDecimal(char);
+	static int readBCC();
+	static int calculateBCC(unsigned char[], int);
 
 };
 

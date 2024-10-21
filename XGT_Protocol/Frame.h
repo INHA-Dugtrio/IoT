@@ -1,12 +1,12 @@
 #ifndef FRAME_H
 #define FRAME_H
 
-class Frame{
+class Frame {
 public:
-    Frame(int*, int);
-    ~Frame();
-    int size;
-    int* data;
+	Frame(float*, int);
+	~Frame();
+	int size;
+	float* data;
 };
 
 #endif
