@@ -12,7 +12,7 @@
 // Pin definitions
 #define RX_PIN 18
 #define TX_PIN 17
-#define COLLECTION_DELAY 20000  // 20ms delay for timer interrupts
+#define COLLECTION_DELAY 20000  
 
 // WiFi credentials and server configuration
 const char* ssid = "YOUR_SSID";  // Change to actual SSID
@@ -51,7 +51,7 @@ void setup() {
   // Initialize and set up the timer
   timer = timerBegin(1000000);
   timerAttachInterrupt(timer, &onTimer);
-  timerAlarm(timer, COLLECTION_DELAY, true);  // Trigger interrupt every 20ms
+  timerAlarm(timer, COLLECTION_DELAY, true, 0);  // Trigger interrupt every 20ms
 }
 
 void loop() {
@@ -102,7 +102,7 @@ void CollectionDataTask(void* p) {
     counter++;
     timestamp += COLLECTION_DELAY / 1000;  // Update timestamp
 
-    // Notify SendDataTask after 50 entries
+
     if (counter >= (1000000 / COLLECTION_DELAY)) {
       counter = 0;
       xTaskNotifyGive(sendDataTaskHandle);  // Notify SendDataTask
@@ -218,15 +218,29 @@ void pushSensorData(JsonArray& entry, Adafruit_MPU6050& mpu) {
 // ============================================================================
 // ============================================================================
 void pushPacketData(JsonArray& entry) {
-  // Wait for ACK from packet handler
-  while (PacketHandler::readByteWithBlocking() != ACK) {}
 
-  // Read packet data
-  Frame* dataFrame = PacketHandler::readPacket();
+  Frame* dataFrame;  // Pointer to hold the packet data
+  while(true) {
+    // Wait for ACK signal from the PacketHandler
+    if(PacketHandler::readByteWithBlocking() == ACK) {
+      dataFrame = PacketHandler::readPacket();  // Attempt to read the packet
 
-  // Add packet data to JSON
-  for (int i = 0; i < dataFrame->size; i++)
-    entry.add(dataFrame->data[i]);
+      // Check if dataFrame is valid (non-nullptr) before proceeding
+      if(dataFrame != nullptr) {
+        break;  // Exit the loop if a valid packet is received
+      }
+      // If dataFrame is nullptr, loop continues to wait for a valid packet
+    }
+  }
 
-  delete dataFrame;  // Free memory
+  // Bug fix: The previous version assumed dataFrame was always valid,
+  // but it could be nullptr, leading to potential crashes.
+
+  // Add packet data to the JSON array
+  for (int i = 0; i < dataFrame->size; i++) {
+    entry.add(dataFrame->data[i]);  // Append packet data to the JSON entry
+  }
+
+  delete dataFrame;  // Free the memory allocated for the packet
 }
+
