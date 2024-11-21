@@ -1,246 +1,174 @@
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
-#include <ArduinoJson.h>
-
-
-#include <HTTPClient.h>
 #include <Wire.h>
 
 #include <WiFi.h>
+#include <ArduinoJson.h>
 #include "PacketHandler.h"
 
 // Pin definitions
 #define RX_PIN 18
 #define TX_PIN 17
-#define COLLECTION_DELAY 20000  
+#define COLLECTION_DELAY 50000
 
-// WiFi credentials and server configuration
-const char* ssid = "YOUR_SSID";  // Change to actual SSID
-const char* password = "YOUR_PW";  // Change to actual password
-const char* server_name = "YOUR_SERVER";  // Change to actual server address
+// WiFi credentials
+const char* ssid = "";      // Replace with your WiFi SSID
+const char* password = "";  // Replace with your WiFi password
+
+// TCP server configuration
+const char* serverIP = "";  // Replace with your server IP
+const int serverPort = 3000;             // Replace with your server port
 
 // Shared resources
-hw_timer_t *timer = NULL;
+QueueHandle_t dataQueue;
+WiFiClient tcpClient;
+
+// Timer
+hw_timer_t* timer = NULL;
 TaskHandle_t dataCollectionTaskHandle = NULL;
-TaskHandle_t sendDataTaskHandle = NULL;
 portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
-StaticJsonDocument<5000> jsonDoc;
-SemaphoreHandle_t jsonMutex = xSemaphoreCreateMutex();
+void IRAM_ATTR onTimer();  // Timer interrupt handler
 
 // Function declarations
 void pushSensorData(JsonArray&, Adafruit_MPU6050&);
 void pushPacketData(JsonArray&);
-void IRAM_ATTR onTimer();  // Timer interrupt handler
+void CollectionDataTask(void* p);
+void SendDataTask(void* p);
 
-// ============================================================================
-// ============================================================================  
-// ============================== SETUP FUNCTION ==============================
-// ============================================================================
-// ============================================================================
 void setup() {
   Serial.begin(115200);
   Serial.println("After 10s start");
-  delay(10000);  // 10-second delay
+  delay(10000);
 
-  // Create the data collection task on core 0
+  // Create tasks
   xTaskCreatePinnedToCore(CollectionDataTask, "CollectionDataTask", 65536, NULL, 3, &dataCollectionTaskHandle, 0);
+  xTaskCreatePinnedToCore(SendDataTask, "SendDataTask", 65536, NULL, 2, NULL, 1);
 
-  // Create the data sending task on core 1
-  xTaskCreatePinnedToCore(SendDataTask, "SendDataTask", 65536, NULL, 2, &sendDataTaskHandle, 1);
-
-  // Initialize and set up the timer
+  // Initialize timer
   timer = timerBegin(1000000);
   timerAttachInterrupt(timer, &onTimer);
-  timerAlarm(timer, COLLECTION_DELAY, true, 0);  // Trigger interrupt every 20ms
+  timerAlarm(timer, COLLECTION_DELAY, true, 0);
+
+  dataQueue = xQueueCreate(10, sizeof(StaticJsonDocument<5000>*));  // Create queue
+  if (dataQueue == NULL) {
+    Serial.println("Failed to create queue");
+    return;
+  }
 }
 
 void loop() {
-  // No code needed here, tasks handle everything
-  vTaskDelay(portMAX_DELAY);
+  // No actions in loop
 }
 
-
-// ============================================================================
-// ============================================================================
-// =========================== DATA COLLECTION TASK ===========================
-// ============================================================================
-// ============================================================================
+// Data collection task
 void CollectionDataTask(void* p) {
-  Serial2.begin(115200, SERIAL_8N1, RX_PIN, TX_PIN);  // Initialize Serial2
-
-  Adafruit_MPU6050 mpu;  // Create MPU6050 object
+  Serial2.begin(115200, SERIAL_8N1, RX_PIN, TX_PIN);
+  Adafruit_MPU6050 mpu;
   unsigned long timestamp = 0, counter = 0;
 
-  // Check if MPU6050 is initialized
   if (!mpu.begin()) {
     Serial.println("Failed to find MPU6050 chip");
     while (true) delay(1000);
   }
-  Serial.println("MPU6050 Found!");
 
-  // Configure MPU6050 settings
   mpu.setAccelerometerRange(MPU6050_RANGE_2_G);
   mpu.setGyroRange(MPU6050_RANGE_500_DEG);
   mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
 
-  // Data collection loop
+  StaticJsonDocument<5000>* send_data = new StaticJsonDocument<5000>;
+
   while (true) {
-    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);  // Wait for timer notification
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
-    if (xSemaphoreTake(jsonMutex, portMAX_DELAY)) {
-      // Create new JSON entry
-      JsonArray entry = jsonDoc.createNestedArray();
-      entry.add(timestamp);
-
-      // Add sensor and packet data
-      pushSensorData(entry, mpu);
-      pushPacketData(entry);
-
-      xSemaphoreGive(jsonMutex);  // Release the mutex
-    }
+    JsonArray entry = send_data->createNestedArray();
+    entry.add(timestamp);
+    pushSensorData(entry, mpu);
+    pushPacketData(entry);
 
     counter++;
-    timestamp += COLLECTION_DELAY / 1000;  // Update timestamp
-
+    timestamp += COLLECTION_DELAY / 1000;
 
     if (counter >= (1000000 / COLLECTION_DELAY)) {
       counter = 0;
-      xTaskNotifyGive(sendDataTaskHandle);  // Notify SendDataTask
+      if (xQueueSend(dataQueue, &send_data, 0) != pdPASS) {
+        Serial.println("Enqueue failed");
+      }
+      send_data = new StaticJsonDocument<5000>;
     }
   }
 }
 
+// Data sending task
+void SendDataTask(void* p) {
 
-// ============================================================================
-// ============================================================================
-// ============================ DATA SENDING TASK ============================
-// ============================================================================
-// ============================================================================
-void SendDataTask(void *p) {
-  // Connect to WiFi
+  // Initialize WiFi
   WiFi.begin(ssid, password);
   Serial.println("Connecting to WiFi...");
   while (WiFi.status() != WL_CONNECTED) {
-    delay(1000);
     Serial.print(".");
+    delay(1000);
   }
   Serial.println("\nConnected to WiFi!");
 
   while (true) {
-    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);  // Wait for data collection notification
-
-    // Reconnect if WiFi is disconnected
-    if (WiFi.status() != WL_CONNECTED) {
-      Serial.println("WiFi disconnected, reconnecting...");
-      WiFi.disconnect();
-      WiFi.begin(ssid, password);
-
-      while (WiFi.status() != WL_CONNECTED) {
+    if (!tcpClient.connected()) {
+      Serial.println("Connecting to TCP server...");
+      if (!tcpClient.connect(serverIP, serverPort)) {
+        Serial.println("TCP connection failed. Retrying...");
         delay(1000);
-        Serial.print(".");
+        continue;
       }
-      Serial.println("\nReconnected to WiFi!");
+      Serial.println("Connected to TCP server!");
     }
 
-    WiFiClient client;
-    HTTPClient http;
+    StaticJsonDocument<5000>* received_data;
+    if (xQueueReceive(dataQueue, &received_data, 0) == pdPASS) {
+      String jsonString;
+      serializeJson(*received_data, jsonString);
+      delete received_data;
 
-    // Start HTTP connection
-    http.begin(client, server_name);
-    http.addHeader("Content-Type", "application/json");
-
-    // Serialize and send JSON data
-    String jsonString;
-    if (xSemaphoreTake(jsonMutex, portMAX_DELAY)) {
-      serializeJson(jsonDoc, jsonString);  // Convert JSON to string
-      jsonDoc.clear();  // Clear JSON after sending
-      xSemaphoreGive(jsonMutex);
+      if (tcpClient.connected()) {
+        tcpClient.println(jsonString);
+        Serial.print("Sent JSON Data: ");
+        Serial.println(jsonString);
+      } else {
+        Serial.println("TCP disconnected, retrying...");
+        tcpClient.stop();
+      }
     }
-
-    // Send HTTP POST request
-    Serial.print("Sending JSON Data: ");
-    Serial.println(jsonString);
-    int httpResponseCode = http.POST(jsonString);
-
-    // Handle server response
-    if (httpResponseCode > 0) {
-      String response = http.getString();
-      Serial.println("HTTP Response Code: " + String(httpResponseCode));
-      Serial.println("Response: " + response);
-    } else {
-      Serial.print("Error on sending POST: ");
-      Serial.println(httpResponseCode);
-    }
-
-    http.end();  // End HTTP connection
-    Serial.println("Data sent and JSON buffer cleared.");
   }
 }
 
-
-// ============================================================================
-// ============================================================================
-// ============================== TIMER INTERRUPT ==============================
-// ============================================================================
-// ============================================================================
+// Timer interrupt
 void IRAM_ATTR onTimer() {
   BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-
-  // Notify the data collection task
   vTaskNotifyGiveFromISR(dataCollectionTaskHandle, &xHigherPriorityTaskWoken);
-
-  // Yield to higher-priority task if needed
   if (xHigherPriorityTaskWoken) {
     portYIELD_FROM_ISR();
   }
 }
 
-
-// ============================================================================
-// ============================================================================
-// ============================ PUSH SENSOR DATA ============================
-// ============================================================================
-// ============================================================================
+// Push sensor data
 void pushSensorData(JsonArray& entry, Adafruit_MPU6050& mpu) {
   sensors_event_t a, g, temp;
-  mpu.getEvent(&a, &g, &temp);  // Get sensor data
-
-  // Add acceleration data to JSON
+  mpu.getEvent(&a, &g, &temp);
   entry.add(a.acceleration.x);
   entry.add(a.acceleration.y);
   entry.add(a.acceleration.z);
 }
 
-
-// ============================================================================
-// ============================================================================
-// ============================ PUSH PACKET DATA ============================
-// ============================================================================
-// ============================================================================
+// Push packet data
 void pushPacketData(JsonArray& entry) {
-
-  Frame* dataFrame;  // Pointer to hold the packet data
-  while(true) {
-    // Wait for ACK signal from the PacketHandler
-    if(PacketHandler::readByteWithBlocking() == ACK) {
-      dataFrame = PacketHandler::readPacket();  // Attempt to read the packet
-
-      // Check if dataFrame is valid (non-nullptr) before proceeding
-      if(dataFrame != nullptr) {
-        break;  // Exit the loop if a valid packet is received
-      }
-      // If dataFrame is nullptr, loop continues to wait for a valid packet
+  Frame* dataFrame;
+  while (true) {
+    if (PacketHandler::readByteWithBlocking() == ACK) {
+      dataFrame = PacketHandler::readPacket();
+      if (dataFrame != nullptr) break;
     }
   }
 
-  // Bug fix: The previous version assumed dataFrame was always valid,
-  // but it could be nullptr, leading to potential crashes.
-
-  // Add packet data to the JSON array
   for (int i = 0; i < dataFrame->size; i++) {
-    entry.add(dataFrame->data[i]);  // Append packet data to the JSON entry
+    entry.add(dataFrame->data[i]);
   }
-
-  delete dataFrame;  // Free the memory allocated for the packet
+  delete dataFrame;
 }
-
