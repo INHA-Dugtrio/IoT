@@ -1,4 +1,6 @@
-# DataCollection 코드 설명
+# DataCollection 코드 설명    
+
+![KakaoTalk_20241203_143225086_01](https://github.com/user-attachments/assets/82730461-b7b0-46b6-8af0-2b3371534bca)   
 
 ## 개요
 `DataCollection` 코드는 **ESP32**를 기반으로 센서 데이터를 수집하고, **PLC-HMI 통신 감청** 데이터를 하나로 결합하여 **WiFi**를 통해 서버로 전송하는 역할을 수행합니다. 이 코드는 정확한 실시간 데이터 수집을 위해 **멀티 태스크** 구조로 프로그래밍되어 있으며, 센서 데이터와 감청 데이터를 하나의 패킷으로 만들어 서버로 전송하는 핵심 기능을 담당합니다.
